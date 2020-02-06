@@ -70,9 +70,6 @@ import json
 from io import StringIO
 from multiprocessing import Queue, Process, Value, cpu_count
 from timeit import default_timer
-# zztanaka added
-import unicodedata
-import glob
 
 
 PY2 = sys.version_info[0] == 2
@@ -213,22 +210,14 @@ templateKeys = set(['10', '828'])
 
 ##
 # Regex for identifying disambig pages
-# zztanaka
-# jawikiでは、{{disambig}} だけでなく、{{aimai}} や {{Aimai}} が使われているが、
-# 抜けているものもある。その場合でもタイトルに " (曖昧さ回避)" が付加されて
-# いるので、 これらを使って曖昧さ回避のページをフィルターする
-#filter_disambig_page_pattern = re.compile("{{disambig(uation)?(\|[^}]*)?}}|__DISAMBIG__")
-filter_disambig_page_pattern = re.compile("{{[Aa]imai(\|[^}]*)?}}|{{.*曖昧さ回避(\|[^}]*)?}}|{{[Dd]isambig(uation)?(\|[^}]*)?}}|__DISAMBIG__")
-filter_disambig_title_pattern = re.compile(" \(曖昧さ回避\)")
+filter_disambig_page_pattern = re.compile("{{disambig(uation)?(\|[^}]*)?}}|__DISAMBIG__")
 
 ##
 g_page_total = 0
 g_page_articl_total=0
 g_page_articl_used_total=0
 # page filtering logic -- remove templates, undesired xml namespaces, and disambiguation pages
-# zztanaka
-#def keepPage(ns, catSet, page):
-def keepPage(ns, catSet, page, title):
+def keepPage(ns, catSet, page):
     global g_page_articl_total,g_page_total,g_page_articl_used_total
     g_page_total += 1
     if ns != '0':               # Aritcle
@@ -236,11 +225,6 @@ def keepPage(ns, catSet, page, title):
     # remove disambig pages if desired
     g_page_articl_total += 1
     if options.filter_disambig_pages:
-
-        # zztanaka
-        if filter_disambig_title_pattern.search(title):
-            return False
-
         for line in page:
             if filter_disambig_page_pattern.match(line):
                 return False
@@ -662,79 +646,13 @@ class Extractor(object):
         text = self.transform(text)
         text = self.wiki2text(text)
         text = compact(self.clean(text))
-
-        # zztanaka
-        # self.wiki2text(text) の中のreplaceInternalLinks(text) で
-        #   内部リンクを書き換えるが、[[ と ]] の対応が間違っている場合、
-        #   その箇所以降の内部リンクが処理されずに残ったままになっている。
-        # その間違ってる箇所が headers や lists の中にあったりすると、
-        #   compact() の中で、削除されるが、それ以降の部分はそのまま残って
-        #   いるので、その部分をここで書き換える。
-        text = [self.clean2(replaceInternalLinks(line)) for line in text]
-
-        ## from zwChan
-        #text = [title_str] + text
+        # from zwChan
+        text = [title_str] + text
 
         if sum(len(line) for line in text) < options.min_text_length:
             return
 
-        # zztanaka
-        new_text = []
-        for line in text:
-            if re.search('。([^」\)\"])', line):
-                # 。」や 。) や 。" 以外の場合は、句点の後で改行を挿入
-                line = re.sub('。([^」\)\"])', r'。\n\1', line)
-                new_text += line.split('\n')
-            elif line:  # 空行を削除
-                new_text.append(line)
-        if len(new_text) > 1:
-            for i, line in enumerate(new_text[1:]):
-                if line and line[0] == '。':
-                    # 行頭に句点がある場合は、前行にアペンド
-                    new_text[i] += line[0]
-                    # 連続する句点は１つに
-                    new_text[i] = re.sub('。+', '。', new_text[i])
-                    new_text[i+1] = line[1:]
-            l = len(new_text)
-            for i, line in enumerate(new_text[-2::-1]):
-                # (最終-1)行から順に第1行まで
-                if line and line[-1] == '、':
-                    # 読点で終わる行は、後続する1行をアペンド
-                    new_text[l-2-i] += new_text[l-1-i]
-                    # 連続する読点は１つに
-                    new_text[l-2-i] = re.sub('、+', '、', new_text[l-2-i])
-                    new_text[l-1-i] = ''
-            new_text = [line for line in new_text if line]  # 空行を削除
-        
-        text = []
-        for line in new_text:
-            l = len(line)
-            if l > 500:
-                continue  # 一行500文字以上のものは除外
-            if l == 1:
-                continue  # 一行1文字のものは除外
-            if line[-1] != '。' and line[-2] != '。':
-                continue  # 行末が 。や 。」や 。) や 。" 以外の場合は除外
-            if not p_kana_kanji.search(line):
-                continue  # 仮名や漢字がないものは除外
-            kana_kanji_rate = len(re.findall(p_kana_kanji, line)) / l
-            if kana_kanji_rate < 0.2:
-                continue  # 仮名や漢字の比率が極めて小さいものは除外
-            text.append(line)
-        
-        # zztanaka
-        if len(text) < 2:  # 1行だけの内容しかない場合は除外
-            return
-        if len(text) > 1000:  # 1,000行を超えるものは、先頭1,000行のみ活用
-            text = text[:1000]
-        
-        #self.write_output(out, text)
-        for line in text:
-            if out == sys.stdout:   # option -a or -o -
-                line = line.encode('utf-8')
-            out.write(line)
-            out.write('\n')
-        out.write('\n')
+        self.write_output(out, text)
 
         errs = (self.template_title_errs,
                 self.recursion_exceeded_1_errs,
@@ -767,7 +685,7 @@ class Extractor(object):
             # expand templates
             # See: http://www.mediawiki.org/wiki/Help:Templates
             return self.expand(text)
-        else:  # options.expand_templates 以外のテンプレートは削除
+        else:
             # Drop transclusions (template, parser functions)
             return dropNested(text, r'{{', r'}}')
 
@@ -871,12 +789,6 @@ class Extractor(object):
 
         text = text.replace('<<', '«').replace('>>', '»')
 
-        # zztanaka
-        for tag in remove_tags:
-            # 不要なタグは削除
-            text = re.sub(tag, '', text, flags=re.IGNORECASE)
-        text = p_url.sub('', text)  # url部分を削除
-
         #############################################
 
         # Cleanup text
@@ -887,7 +799,6 @@ class Extractor(object):
         text = re.sub('(\[\(«) ', r'\1', text)
         text = re.sub(r'\n\W+?\n', '\n', text, flags=re.U)  # lines with only punctuations
         text = text.replace(',,', ',').replace(',.', '.')
-
         if options.keep_tables:
             # the following regular expressions are used to remove the wikiml chartacters around table strucutures
             # yet keep the content. The order here is imporant so we remove certain markup like {| and then
@@ -900,64 +811,6 @@ class Extractor(object):
             text = cgi.escape(text)
         return text
 
-
-    # zztanaka
-    def clean2(self, text):
-        text = text.translate(trans_map)  # 制御文字などの置換と削除
-        # unicodedata.normalize()は、全角チルダを半角チルダに置換するが、
-        # 日本語では全角チルダと半角チルダは別物なので変換したくない。
-        # Sentencepieceでもこのように扱っているので、それに合わせる。
-        # ジェネレータtildesに、全角と半角チルダの出現順を記憶
-        tildes = (c for c in text if c=='～' or c=='~')
-        text = unicodedata.normalize('NFKC', text)
-        # チルダに関して、unicodedata.normalize()で置換される前の状態に戻す。
-        text = ''.join([c if c!='~' else next(tildes) for c in text])
-
-        text = re.sub('[\u2018-\u201B]', '"', text)
-        text = re.sub('[\u201C-\u201F]', '"', text)
-
-        text = text.translate(non_bmp_map)  # BMPを超える文字は'〓'に置換
-        text = text.translate(ideographic_variation_map)  # 字形選択子を削除
-    
-        #text = text.translate(non_jis_map)  # 非JISのCJK統合漢字は'鿐'に置換
-        #if '鿐' in text:  # 中国語文字列は「〓」に置換
-        #    text = re.sub(p_no_jis_str, '〓', text)
-        #    text = re.sub(p_multil_con, '〓', text)
-        if p_multil.search(text):  # 多言語文字列は「〓」に置換
-            text = re.sub(p_multil_str, '〓', text)
-            text = re.sub(p_multil_con, '〓', text)
-        
-        text = re.sub(' +', ' ', text)  # 連続する半角スペースは１つに
-        text = text.replace(' 、', '、')  # 句読点の前後の半角スペースを削除
-        text = text.replace('、 ', '、')
-        text = text.replace(' 。', '。')
-        text = text.replace('。 ', '。')
-        text = text.replace('、。', '。')  # 句点の前の読点を削除
-        text = text.replace(', ,', ',').replace(', .', '.')
-        text = re.sub('。+', '。', text)  # 連続する句点は１つに
-        text = re.sub('、+', '、', text)  # 連続する読点は１つに
-        text = text.replace('、)', ')')  # 括弧内の無用な読点やカンマを削除
-        text = text.replace('(、', '(')
-        text = text.replace(',)', ')')
-        text = text.replace('(,', '(')
-        text = text.replace(' (', '(')  # 括弧の前後の半角スペースを削除
-        text = text.replace('( ', '(')  # 括弧の前後の半角スペースを削除
-        text = text.replace(' )', ')')
-        text = text.replace(') ', ')')
-        text = text.replace('( )', '')
-        text = text.replace('""', '')
-        text = text.replace('"〓"', '〓')
-        text = text.replace('(〓,)', '')
-        text = text.replace('(〓)', '')
-        text = text.replace('(〓)', '')  # (〓(〓)) に対処
-        text = text.replace('(〓 /)', '')
-        text = text.replace('(〓 / )', '')
-        text = text.replace('〓 。', '〓。')
-        text = text.replace('〓 、', '〓、')
-        text = text.replace('()', '')
-        text = text.lstrip()  # 行頭のスペースを削除
-        text = text.rstrip()  # 行末のスペースを削除
-        return text.lower()  # 英文字は小文字化
 
     # ----------------------------------------------------------------------
     # Expand templates
@@ -1445,16 +1298,15 @@ def findBalanced(text, openDelim=['[['], closeDelim=[']]']):
     :return: an iterator producing pairs (start, end) of start and end
     positions in text containing a balanced expression.
     """
-    # findBalanced(text) で呼ばれた場合、openPat: '\[\['
     openPat = '|'.join([re.escape(x) for x in openDelim])
     # pattern for delimiters expected after each opening delimiter
-    afterPat = {o: re.compile(openPat + '|' + c, re.DOTALL) for o, c in zip(openDelim, closeDelim)}  # {'[[': re.compile('\\[\\[|]]', re.DOTALL)}
+    afterPat = {o: re.compile(openPat + '|' + c, re.DOTALL) for o, c in zip(openDelim, closeDelim)}
     stack = []
     start = 0
     cur = 0
     # end = len(text)
-    startSet = False  # startポイントがセットされているか
-    startPat = re.compile(openPat)  # [[ を見つけるパターン
+    startSet = False
+    startPat = re.compile(openPat)
     nextPat = startPat
     while True:
         next = nextPat.search(text, cur)
@@ -1462,11 +1314,11 @@ def findBalanced(text, openDelim=['[['], closeDelim=[']]']):
             return
         if not startSet:
             start = next.start()
-            startSet = True  # startポイントを見つけた
+            startSet = True
         delim = next.group(0)
         if delim in openDelim:
-            stack.append(delim)  # [[ を見つけるごとにスタックに積んでいく
-            nextPat = afterPat[delim]  # [[ と ]] の両睨みのパターン
+            stack.append(delim)
+            nextPat = afterPat[delim]
         else:
             opening = stack.pop()
             # assert opening == openDelim[closeDelim.index(next.group(0))]
@@ -1477,7 +1329,7 @@ def findBalanced(text, openDelim=['[['], closeDelim=[']]']):
                 nextPat = startPat
                 start = next.end()
                 startSet = False
-        cur = next.end()  # カレント・ポインタを進める
+        cur = next.end()
 
 
 # ----------------------------------------------------------------------
@@ -1656,32 +1508,8 @@ def roman_main(args):
     )
     return toRoman(num, smallRomans)
 
-# zztanaka
-# たとえば、
-# {{仮リンク|NISAR (衛星)|en|NISAR (satellite)|label=NISAR}} では、
-# args: {'1': 'NISAR (衛星)', '2': 'en', '3': 'NISAR (satellite)', 'label': 'NISAR'}
-def ill(args):
-    l = args.get('label')
-    if l:
-        return l
-    else:
-        return args['1']
-
 # ----------------------------------------------------------------------
 
-# zztanaka
-# 「仮リンク」テンプレートの定義を見ると、
-# <noinclude>{{Template sandbox notice}}</noinclude><includeonly>{{#invoke:仮リンク|ill}}</includeonly><noinclude>{{Documentation}}</noinclude>
-# ここで、
-# <noinclude>は、他のページから呼び出されたときに表示しない部分、
-# <onlyinclude>は、他のページから呼び出されたときにだけ表示する部分の指定。
-# よって、
-# options.templates['Template:仮リンク']) -> {{#invoke:仮リンク|ill}}
-# となるので、「仮リンク」モジュールの関数illが呼ばれることがわかる。
-# そこで、以下で「仮リンク」モジュールと関数illを紐付け、
-# 別途、関数illを追加する。
-# これをしないと、「仮リンク」テンプレートを展開しようとしても、空文字列に
-# 置き換わるだけとなる。
 modules = {
     'convert': {
         'convert': lambda x, u, *rest: x + ' ' + u,  # no conversion
@@ -1707,10 +1535,6 @@ modules = {
 
     'Numero romano': {
         'main': roman_main
-    },
-
-    '仮リンク': {
-        'ill': ill
     }
 }
 
@@ -2315,17 +2139,6 @@ def replaceInternalLinks(text):
                     pipe = last  # advance
                 curp = e1
             label = inner[pipe + 1:].strip()
-
-            # zztanaka
-            # label が空文字列の場合は、titleを当てる
-            # たとえば、元々の [[有声両唇軟口蓋接近音|{{IPA|j}}]] が
-            # self.transform(text) の中の transform1() で {{IPA|j}} が
-            # 削除されて、[[有声両唇軟口蓋接近音|]] となっていまい、
-            # このままだと、空の label が優先されて、この箇所が空文字列に
-            # 置換されてしまう。これを防ぐために、label = title にする。
-            if label == '':
-                label = title
-
         res += text[cur:s] + makeInternalLink(title, label) + trail
         cur = end
     return res + text[cur:]
@@ -2599,7 +2412,7 @@ def replaceInternalLinks(text):
 def makeInternalLink(title, label):
     colon = title.find(':')
     if colon > 0 and title[:colon] not in options.acceptedNamespaces:
-        return ''  # Image: や File: や Category: などのリンクは削除
+        return ''
     if colon == 0:
         # drop also :File:
         colon2 = title.find(':', colon + 1)
@@ -2864,7 +2677,7 @@ class NextFile(object):
 
     def __next__(self):
         self.file_index = (self.file_index + 1) % NextFile.filesPerDir
-        if self.file_index == 0:  # filesPerDirごとにディレクトリをインクリメント
+        if self.file_index == 0:
             self.dir_index += 1
         dirname = self._dirname()
         if not os.path.isdir(dirname):
@@ -2873,7 +2686,7 @@ class NextFile(object):
 
     next = __next__
 
-    def _dirname(self):  # AAから
+    def _dirname(self):
         char1 = self.dir_index % 26
         char2 = self.dir_index // 26 % 26
         return os.path.join(self.path_name, '%c%c' % (ord('A') + char2, ord('A') + char1))
@@ -2922,7 +2735,7 @@ class OutputSplitter(object):
 # READER
 
 tagRE = re.compile(r'(.*?)<(/?\w+)[^>]*?>(?:([^<]*)(<.*?>)?)?')
-#                    1     2                3      4
+#                    1     2               3      4
 keyRE = re.compile(r'key="(\d*)"')
 catRE = re.compile(r'\[\[Category:([^\|]+).*\]\].*')  # capture the category name [[Category:Category name|Sortkey]]"
 
@@ -3064,30 +2877,29 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
         m = tagRE.search(line)
         if not m:
             continue
-        tag = m.group(2)  # タグ名を抽出
+        tag = m.group(2)
         if tag == 'base':
             # discover urlbase from the xml dump file
             # /mediawiki/siteinfo/base
-            base = m.group(3)  # https://ja.wikipedia.org/wiki/メインページ
-            options.urlbase = base[:base.rfind("/")]  # https://ja.wikipedia.org/wiki
+            base = m.group(3)
+            options.urlbase = base[:base.rfind("/")]
         elif tag == 'namespace':
-            # https://ja.wikipedia.org/wiki/Help:名前空間 を参照
             mk = keyRE.search(line)
             if mk:
-                nsid = ''.join(mk.groups())  # 名前空間のID番号
+                nsid = ''.join(mk.groups())
             else:
-                nsid = ''  # key="(\d*)"にマッチしない、-1 と -2 はこっち
-            options.knownNamespaces[m.group(3)] = nsid  # m.group(3)は名前空間名
+                nsid = ''
+            options.knownNamespaces[m.group(3)] = nsid
             if re.search('key="10"', line):
-                options.templateNamespace = m.group(3)  # Template
+                options.templateNamespace = m.group(3)
                 options.templatePrefix = options.templateNamespace + ':'
             elif re.search('key="828"', line):
-                options.moduleNamespace = m.group(3)  # モジュール
+                options.moduleNamespace = m.group(3)
                 options.modulePrefix = options.moduleNamespace + ':'
-        elif tag == '/siteinfo':  # </siteinfo> まででfor文終了
+        elif tag == '/siteinfo':
             break
 
-    if options.expand_templates:  # ここは False
+    if options.expand_templates:
         # preprocess
         template_load_start = default_timer()
         if template_file:
@@ -3109,25 +2921,6 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
         template_load_elapsed = default_timer() - template_load_start
         logging.info("Loaded %d templates in %.1fs", len(options.templates), template_load_elapsed)
 
-    # zztanaka
-    # 本来の2パスのtemplate展開の処理を無視して、強制的に以下のテンプレート
-    # だけを展開させることにする。
-    #for key in options.templates.keys():
-    #    if re.match('Template:Lang', key):
-    #        print(key)
-    #        print(options.templates[key])
-    options.templates = {
-        'Template:仮リンク': '{{#invoke:仮リンク|ill}}',
-        'Template:要出典': '{{{1}}}',
-        'Template:要出典範囲': '{{{1}}}',
-        'Template:Lang': '<span lang="{{{1}}}" xml:lang="{{{1}}}">{{{2}}}</span>{{#if:{{{3|}}}|&#32;<small>{{{3}}}</small>}}',
-        'Template:LangWithName': '{{#ifeq:{{{links|}}}|no |{{{2}}} |[[{{{2}}}]]}}&#58; {{Lang|{{{1}}}|{{{3}}}}}',
-        'Template:Lang-en-short':
-        '{{langWithName|en|{{#ifeq:{{{links|}}}|no|英|英語{{!}}英}}|{{{1|}}}|links={{{links|yes}}}}}',
-        'Template:Lang-us-short':
-        '{{langWithName|en-us|アメリカ英語{{!}}米|{{{1|}}}|links={{{links|{{{link|yes}}}}}}}}'
-    }
-    
     # process pages
     logging.info("Starting page extraction from %s.", input_file)
     extract_start = default_timer()
@@ -3173,11 +2966,7 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
     page_num = 0
     for page_data in pages_from(input):
         id, revid, title, ns, catSet, page = page_data
-
-        # zztanaka
-        #if keepPage(ns, catSet, page):
-        if keepPage(ns, catSet, page, title):
-
+        if keepPage(ns, catSet, page):
             # slow down
             delay = 0
             if spool_length.value > max_spool_length:
@@ -3212,23 +3001,6 @@ def process_dump(input_file, template_file, out_file, file_size, file_compress,
                  process_count, page_num, extract_duration, extract_rate)
     logging.info("total of page: %d, total of articl page: %d; total of used articl page: %d" % (g_page_total, g_page_articl_total,g_page_articl_used_total))
 
-    # zztanaka added
-    if (out_file):
-        new_page_articl_used_total = 0
-        for dir in glob.glob(os.path.join(out_file, '[A-Z][A-Z]')):
-            files = sorted(glob.glob(os.path.join(dir, 'wiki_*')))
-            all_file = os.path.join(dir, 'all.txt')
-            if os.path.exists(all_file):
-                os.remove(all_file)
-            with open(all_file, 'w') as outfile:
-                for file in files:
-                    with open(file) as infile:
-                        for line in infile:
-                            if re.match('$', line):
-                                new_page_articl_used_total += 1
-                            outfile.write(line)
-        logging.info(f'real total of used articl page: {new_page_articl_used_total:d}')
-
 
 # ----------------------------------------------------------------------
 # Multiprocess support
@@ -3247,6 +3019,7 @@ def extract_process(opts, i, jobs_queue, output_queue):
     createLogger(options.quiet, options.debug, options.log_file)
 
     out = StringIO()                 # memory buffer
+
 
     while True:
         job = jobs_queue.get()  # job is (id, title, page, page_num)
@@ -3417,7 +3190,7 @@ def main():
 
     try:
         power = 'kmg'.find(args.bytes[-1].lower()) + 1
-        file_size = int(args.bytes[:-1]) * 1024 ** power  # 500M -> 524288000
+        file_size = int(args.bytes[:-1]) * 1024 ** power
         if file_size < minFileSize:
             raise ValueError()
     except ValueError:
@@ -3520,80 +3293,4 @@ def createLogger(quiet, debug, log_file):
         logger.addHandler(fileHandler)
 
 if __name__ == '__main__':
-    # zztanaka
-    remove_tags = (r'<ruby[^>]*>', r'</ruby>',
-                   r'<rb>', r'</rb>', r'<rp>', r'</rp>', r'<rt[^>]*>', r'</rt>',
-                   r'<nowiki>', '</nowiki>', r'<br>', r'</br ?>',
-                   r'<del>', r'</del>', r'<ins>', r'</ins>', r'<ce>', r'</ce>',
-                   r'<chem>', r'</chem>', r'<math>', r'</math>',
-                   r'<small>', r'</small>', r'<onlyinclude>', r'</onlyinclude>',
-                   r'<includeonly>', r'</includeonly>',
-                   r'<sup>', r'</sup>', r'<sub>', r'</sub>',
-                   r'<quote>', r'</quote>', r'<samp>', r'</samp>',
-                   r'<q>', r'</q>', r'<q [^>]+>',
-                   r'<ref[^>]*>', r'</ref[^>]*>',
-                   r'<REF[^>]*>', r'</REF[^>]*>',
-                   r'^.*<html.*', r'^.*</html>.*',
-                   r'<section[^>]*>', r'</table>',
-                   r'<div[^>]*>', r'</div[^>]*>',
-                   r'</graph>', r'^<mapframe.*$', r'</mapframe>', 
-                   r'<score[^>]*>', r'</score>', r'<poem[^>]*>', r'</poem>',
-                   r'<ref [^/]+/', r'</u >',
-                   r'<span>', r'</span[^>]*>',
-                   r'<dfn>', r'</dfn>', r'<rf[^>]+>', r'</rf>')
-    # url
-    p_url = re.compile(r'https?://[\w/:%#\$&\?\(\)~\.=\+\-]+', re.IGNORECASE)
-    # 仮名やCJK統合漢字
-    p_kana_kanji = re.compile(r'[ぁ-んァ-ヶ\u4E00-\u9FD0]')
-    # ハングル文字を含む多言語文字など（注: 全角文字や半角カタカナの領域も
-    # 入っているが、'～'(U+FF5E)以外はNFKC標準化後に用いるので問題ない）
-    p_multil = re.compile(r'[\u0400-\u1FFF\u2C00-\u2DDF\u3100-\u31FF\uA000-\uF8FF\uFB00-\uFF5D\uFF5F-\uFFDF]')
-    p_multil_str = re.compile(r'[a-zA-Z\u0100-\u1FFF\u2C00-\u2DDF\u3100-\u31FF\uA000-\uF8FF\uFB00-\uFF5D\uFF5F-\uFFDF]*[\u0100-\u1FFF\u2C00-\u2DDF\u3100-\u31FF\uA000-\uF8FF\uFB00-\uFF5D\uFF5F-\uFFDF]+[.a-zA-Z\u0100-\u1FFF\u2C00-\u2DDF\u3100-\u31FF\uA000-\uF8FF\uFB00-\uFF5D\uFF5F-\uFFDF]*')
-    p_multil_con = re.compile(r'(〓[ -])+〓')
-
-    # BMP (Unicodeの基本多言語面[U+0000 - U+FFFF]) を超える文字は'〓'に置換
-    #non_bmp_map = dict.fromkeys(range(0x10000, sys.maxunicode + 1), '〓')
-    non_bmp_map = dict.fromkeys(range(0x10000, 0x2ffff + 1), '〓')
-    # 字形選択子を削除
-    ideographic_variation_map = dict.fromkeys(range(0xe0100, 0xe01ef + 1), '')
-
-    ## (CJK統合漢字でcp932で変換できない) JIS第一第二水準(+MS拡張)漢字以外は
-    ## そのような文字を代表させて'鿐'(U+9FD0)に置換
-    #non_jis_cjk_unified = [u for u in range(0x4e00, 0x9fd0 + 1) if chr(u).encode('cp932','ignore').decode('cp932')=='']
-    #non_jis_map = dict.fromkeys(non_jis_cjk_unified, '鿐')
-    ## 非JIS漢字とJIS漢字からなる文字列を抽出する
-    #p_no_jis_str = re.compile(r'[\u4E00-\u9FCF]*\u9FD0+[\u4E00-\u9FCF]*')
-
-    trans_map = str.maketrans(
-        ''.join(['\u1160',  # ハングル字母のスペースの置換
-                 '\u3164',  # ハングル互換字母のスペースの置換
-                 '\u2800',  # 点字のスペースの置換
-                 '\u1680',  # OGHAM SPACE MARK
-                 '\u200B',  # ZERO WIDTH SPACE
-                 '\u200C',  # ZERO WIDTH NON-JOINER
-                 '\u200D',  # ZERO WIDTH JOINER
-                 '\u200E',  # LEFT-TO-RIGHT MARK
-                 '\u200F',  # RIGHT-TO-LEFT MARK
-                 '\u2028',  # LINE SEPARATOR
-                 '\u2029',  # PARAGRAPH SEPARATOR
-                 '\u2581',  # LOWER ONE EIGHT BLOCK（Sentencepieceで半角スペース置換に使用）
-                 '\uFFFD'] +  # REPLACEMENT CHARACTER
-                ['\u2010',  # HYPHEN
-                 '\u2011',  # NON-BREAKING HYPHEN
-                 '\u2012',  # FIGURE DASH
-                 '\u2013',  # EN DASH
-                 '\u2014',  # EM DASH
-                 '\u2015',  # HORIZONTAL BAR
-                 '\u2212'] +  # MINUS SIGN
-                ['\u318D']),  # ハングル互換字母の中点の置換
-        ' '*13 + '-'*7 + '・',  # 置換先は、SPACEとHYPHEN-MINUSと中点
-        ''.join([chr(i) for i in range(0, 0x08+1)] +  # HT以外の制御文字を削除
-                [chr(i) for i in range(0x0a, 0x1F+1)] +  # 制御文字を削除
-                [chr(i) for i in range(0x7f, 0xa1+1)] +  # 制御文字を削除
-                ['\u00AD',  # SOFT HYPHONを削除
-                 '\uFE0E',  # 絵文字の異体字選択符号を削除
-                 '\uFE0F',  # 絵文字の異体字選択符号を削除
-                 '\uFEFF',  # BOMを削除
-                 '\uFFFE']))  # BOMを削除
-        
     main()
